@@ -1,0 +1,48 @@
+# Example VORTEX configuration showing every supported field.
+# Copy to vortex.yaml and adjust for your environment.
+# ${VAR} references are expanded from environment variables at load time.
+
+server:
+  workers: 8
+  shutdown_timeout: 30s
+
+admin:
+  address: ":9090"
+
+logging:
+  level: info
+  format: json
+
+listeners:
+  - name: http
+    address: ":8080"
+    protocol: http
+
+  - name: tcp
+    address: ":9000"
+    protocol: tcp
+
+backends:
+  - name: app-1
+    address: "10.0.0.11:8080"
+    weight: 1
+
+  - name: app-2
+    address: "10.0.0.12:8080"
+    weight: 2
+
+load_balancing:
+  algorithm: weighted_round_robin
+
+health_check:
+  enabled: true
+  interval: 5s
+  timeout: 2s
+  unhealthy_threshold: 3
+  healthy_threshold: 2
+
+timeouts:
+  connect: 5s
+  read: 30s
+  write: 30s
+  idle: 60s

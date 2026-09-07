@@ -1,0 +1,6 @@
+/bin/
+/vortex
+/vortexctl
+*.test
+*.out
+.env

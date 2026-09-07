@@ -1,0 +1,33 @@
+# Local development configuration.
+# Listeners and backends are added starting with Phase 2/3 of the build.
+
+server:
+  workers: 8
+  shutdown_timeout: 30s
+
+admin:
+  address: ":9090"
+
+logging:
+  level: info
+  format: json
+
+listeners: []
+
+backends: []
+
+load_balancing:
+  algorithm: round_robin
+
+health_check:
+  enabled: true
+  interval: 5s
+  timeout: 2s
+  unhealthy_threshold: 3
+  healthy_threshold: 2
+
+timeouts:
+  connect: 5s
+  read: 30s
+  write: 30s
+  idle: 60s
