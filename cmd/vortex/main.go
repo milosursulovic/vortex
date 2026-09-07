@@ -5,12 +5,15 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/milosursulovic/vortex/internal/admin"
+	"github.com/milosursulovic/vortex/internal/backend"
 	"github.com/milosursulovic/vortex/internal/config"
+	"github.com/milosursulovic/vortex/internal/listener"
 	"github.com/milosursulovic/vortex/pkg/logger"
 )
 
@@ -35,6 +38,11 @@ func run() error {
 	adminServer := admin.New(cfg.Admin.Address, log)
 	serveErrCh := adminServer.Start()
 
+	tcpManager, err := startTCPListeners(cfg, log)
+	if err != nil {
+		return fmt.Errorf("start tcp listeners: %w", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -54,6 +62,32 @@ func run() error {
 		return fmt.Errorf("admin server shutdown: %w", err)
 	}
 
+	if err := tcpManager.Close(); err != nil {
+		log.Error("tcp_listener_close_failed", "error", err.Error())
+	}
+	tcpManager.WaitClosed(shutdownCtx)
+
 	log.Info("shutdown_complete")
 	return nil
+}
+
+// startTCPListeners binds every TCP listener from the config, proxying to a
+// shared round-robin pool of the configured backends. HTTP listeners are
+// accepted in config but not yet served (added in a later phase).
+func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, error) {
+	picker := backend.NewRoundRobin(cfg.Backends)
+	mgr := listener.NewManager(log)
+
+	for _, l := range cfg.Listeners {
+		switch l.Protocol {
+		case "tcp":
+			if err := mgr.StartTCP(l, picker, cfg.Timeouts); err != nil {
+				return nil, err
+			}
+		case "http":
+			log.Warn("http_listener_not_yet_implemented", "name", l.Name, "address", l.Address)
+		}
+	}
+
+	return mgr, nil
 }
