@@ -36,6 +36,8 @@ load_balancing:
 
 health_check:
   enabled: true
+  type: tcp # tcp (connect only) or http (GET path below)
+  path: /health
   interval: 5s
   timeout: 2s
   unhealthy_threshold: 3

@@ -54,6 +54,8 @@ type LoadBalancingConfig struct {
 
 type HealthCheckConfig struct {
 	Enabled            bool     `yaml:"enabled"`
+	Type               string   `yaml:"type"` // "tcp" (default) or "http"
+	Path               string   `yaml:"path"` // HTTP check path, default "/health"
 	Interval           Duration `yaml:"interval"`
 	Timeout            Duration `yaml:"timeout"`
 	UnhealthyThreshold int      `yaml:"unhealthy_threshold"`
@@ -117,6 +119,12 @@ func (c *Config) applyDefaults() {
 	if c.Logging.Format == "" {
 		c.Logging.Format = "json"
 	}
+	if c.HealthCheck.Type == "" {
+		c.HealthCheck.Type = "tcp"
+	}
+	if c.HealthCheck.Path == "" {
+		c.HealthCheck.Path = "/health"
+	}
 	if c.HealthCheck.Interval == 0 {
 		c.HealthCheck.Interval = Duration(5e9) // 5s
 	}
@@ -146,6 +154,12 @@ func (c *Config) applyDefaults() {
 func (c *Config) validate() error {
 	if c.Admin.Address == "" {
 		return fmt.Errorf("admin.address must not be empty")
+	}
+
+	switch c.HealthCheck.Type {
+	case "tcp", "http":
+	default:
+		return fmt.Errorf("health_check.type must be \"tcp\" or \"http\", got %q", c.HealthCheck.Type)
 	}
 
 	seen := make(map[string]struct{}, len(c.Listeners))

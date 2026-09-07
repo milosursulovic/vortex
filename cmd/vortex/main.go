@@ -14,6 +14,7 @@ import (
 	"github.com/milosursulovic/vortex/internal/backend"
 	"github.com/milosursulovic/vortex/internal/balancer"
 	"github.com/milosursulovic/vortex/internal/config"
+	"github.com/milosursulovic/vortex/internal/health"
 	"github.com/milosursulovic/vortex/internal/listener"
 	"github.com/milosursulovic/vortex/pkg/logger"
 )
@@ -39,10 +40,14 @@ func run() error {
 	adminServer := admin.New(cfg.Admin.Address, log)
 	serveErrCh := adminServer.Start()
 
-	tcpManager, err := startTCPListeners(cfg, log)
+	tcpManager, pool, err := startTCPListeners(cfg, log)
 	if err != nil {
 		return fmt.Errorf("start tcp listeners: %w", err)
 	}
+
+	healthCtx, stopHealthChecks := context.WithCancel(context.Background())
+	defer stopHealthChecks()
+	go health.NewMonitor(pool, cfg.HealthCheck, log).Run(healthCtx)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -76,12 +81,12 @@ func run() error {
 // shared backend pool through the configured load-balancing algorithm.
 // HTTP listeners are accepted in config but not yet served (added in a
 // later phase).
-func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, error) {
+func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, *backend.Pool, error) {
 	pool := backend.NewPool(cfg.Backends)
 
 	bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	log.Info("load_balancing_algorithm_selected", "algorithm", bal.Name())
 
@@ -92,12 +97,12 @@ func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager,
 		switch l.Protocol {
 		case "tcp":
 			if err := mgr.StartTCP(l, picker, cfg.Timeouts); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 		case "http":
 			log.Warn("http_listener_not_yet_implemented", "name", l.Name, "address", l.Address)
 		}
 	}
 
-	return mgr, nil
+	return mgr, pool, nil
 }

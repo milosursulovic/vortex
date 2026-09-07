@@ -21,6 +21,7 @@ load_balancing:
 
 health_check:
   enabled: true
+  type: tcp
   interval: 5s
   timeout: 2s
   unhealthy_threshold: 3
