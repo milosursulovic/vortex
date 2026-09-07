@@ -75,7 +75,7 @@ func run() error {
 // shared round-robin pool of the configured backends. HTTP listeners are
 // accepted in config but not yet served (added in a later phase).
 func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, error) {
-	picker := backend.NewRoundRobin(cfg.Backends)
+	picker := backend.NewPool(cfg.Backends)
 	mgr := listener.NewManager(log)
 
 	for _, l := range cfg.Listeners {

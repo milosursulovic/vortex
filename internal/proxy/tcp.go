@@ -13,9 +13,9 @@ import (
 	"github.com/milosursulovic/vortex/internal/connection"
 )
 
-// BackendPicker selects the next backend target for a new connection.
+// BackendPicker selects the next backend for a new connection.
 type BackendPicker interface {
-	Next() (backend.Target, error)
+	Next() (*backend.Backend, error)
 }
 
 // ServeTCP proxies clientConn to a backend chosen by picker until either
@@ -34,14 +34,19 @@ func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.Timeout
 	}
 	conn.BackendAddr = target.Address
 	conn.SetState(connection.StateConnecting)
+	target.IncTotalConnections()
 
 	dialer := net.Dialer{Timeout: timeouts.Connect.Duration()}
 	backendConn, err := dialer.Dial("tcp", target.Address)
 	if err != nil {
+		target.IncFailures()
 		logger.Error("backend_connect_failed", "connection_id", conn.ID, "backend", target.Name, "address", target.Address, "error", err.Error())
 		return
 	}
 	defer backendConn.Close()
+
+	target.IncActiveConnections()
+	defer target.DecActiveConnections()
 
 	conn.SetState(connection.StateEstablished)
 	logger.Info("backend_selected", "connection_id", conn.ID, "backend", target.Name, "address", target.Address)
