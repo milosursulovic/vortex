@@ -3,19 +3,21 @@
 package proxy
 
 import (
+	"context"
 	"log/slog"
 	"net"
 	"sync"
 	"time"
 
 	"github.com/milosursulovic/vortex/internal/backend"
+	"github.com/milosursulovic/vortex/internal/common"
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/connection"
 )
 
 // BackendPicker selects the next backend for a new connection.
 type BackendPicker interface {
-	Next() (*backend.Backend, error)
+	Next(ctx context.Context) (*backend.Backend, error)
 }
 
 // ServeTCP proxies clientConn to a backend chosen by picker until either
@@ -27,7 +29,8 @@ func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.Timeout
 	conn := connection.New(clientConn.RemoteAddr().String())
 	logger.Info("connection_accepted", "connection_id", conn.ID, "client", conn.ClientAddr)
 
-	target, err := picker.Next()
+	ctx := common.WithClientAddr(context.Background(), conn.ClientAddr)
+	target, err := picker.Next(ctx)
 	if err != nil {
 		logger.Error("backend_selection_failed", "connection_id", conn.ID, "error", err.Error())
 		return

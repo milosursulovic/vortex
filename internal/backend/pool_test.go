@@ -13,52 +13,17 @@ func newTestPool() *Pool {
 	})
 }
 
-func TestPoolNextRoundRobinsOverHealthy(t *testing.T) {
+func TestPoolHealthyExcludesNonUpBackends(t *testing.T) {
 	p := newTestPool()
+	p.Drain("a")
 
-	var got []string
-	for i := 0; i < 4; i++ {
-		b, err := p.Next()
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		got = append(got, b.Name)
-	}
-
-	want := []string{"a", "b", "a", "b"}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("got %v, want %v", got, want)
-		}
+	healthy := p.Healthy()
+	if len(healthy) != 1 || healthy[0].Name != "b" {
+		t.Fatalf("expected only b to be healthy, got %v", healthy)
 	}
 }
 
-func TestPoolNextSkipsNonUpBackends(t *testing.T) {
-	p := newTestPool()
-	p.Disable("a")
-
-	for i := 0; i < 3; i++ {
-		b, err := p.Next()
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		if b.Name != "b" {
-			t.Fatalf("expected only healthy backend b, got %s", b.Name)
-		}
-	}
-}
-
-func TestPoolNextErrorsWhenNoneHealthy(t *testing.T) {
-	p := newTestPool()
-	p.Disable("a")
-	p.Disable("b")
-
-	if _, err := p.Next(); err == nil {
-		t.Fatal("expected error when no backends are healthy")
-	}
-}
-
-func TestPoolDrainExcludesFromNewConnectionsButKeepsRegistered(t *testing.T) {
+func TestPoolDrainKeepsBackendRegistered(t *testing.T) {
 	p := newTestPool()
 	p.Drain("a")
 
@@ -68,16 +33,6 @@ func TestPoolDrainExcludesFromNewConnectionsButKeepsRegistered(t *testing.T) {
 	}
 	if b.State() != StateDraining {
 		t.Fatalf("expected DRAINING, got %s", b.State())
-	}
-
-	for i := 0; i < 3; i++ {
-		next, err := p.Next()
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		if next.Name == "a" {
-			t.Fatal("draining backend must not receive new connections")
-		}
 	}
 }
 

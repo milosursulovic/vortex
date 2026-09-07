@@ -12,6 +12,7 @@ import (
 
 	"github.com/milosursulovic/vortex/internal/admin"
 	"github.com/milosursulovic/vortex/internal/backend"
+	"github.com/milosursulovic/vortex/internal/balancer"
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/listener"
 	"github.com/milosursulovic/vortex/pkg/logger"
@@ -72,10 +73,19 @@ func run() error {
 }
 
 // startTCPListeners binds every TCP listener from the config, proxying to a
-// shared round-robin pool of the configured backends. HTTP listeners are
-// accepted in config but not yet served (added in a later phase).
+// shared backend pool through the configured load-balancing algorithm.
+// HTTP listeners are accepted in config but not yet served (added in a
+// later phase).
 func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, error) {
-	picker := backend.NewPool(cfg.Backends)
+	pool := backend.NewPool(cfg.Backends)
+
+	bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("load_balancing_algorithm_selected", "algorithm", bal.Name())
+
+	picker := &balancer.Picker{Balancer: bal, Pool: pool}
 	mgr := listener.NewManager(log)
 
 	for _, l := range cfg.Listeners {

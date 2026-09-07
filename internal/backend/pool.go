@@ -1,19 +1,17 @@
 package backend
 
 import (
-	"fmt"
 	"sync"
-	"sync/atomic"
 
 	"github.com/milosursulovic/vortex/internal/config"
 )
 
-// Pool is the registry of backends VORTEX can proxy to.
+// Pool is the registry of backends VORTEX can proxy to. Picking a backend
+// among the healthy ones is the balancer package's job, not the pool's.
 type Pool struct {
-	mu       sync.RWMutex
-	byName   map[string]*Backend
-	order    []*Backend // stable iteration order for round-robin
-	rrCursor atomic.Uint64
+	mu     sync.RWMutex
+	byName map[string]*Backend
+	order  []*Backend // stable iteration order
 }
 
 // NewPool builds a pool from the configured backends, each starting UP.
@@ -118,14 +116,4 @@ func (p *Pool) Healthy() []*Backend {
 		}
 	}
 	return out
-}
-
-// Next picks the next UP backend in round-robin order.
-func (p *Pool) Next() (*Backend, error) {
-	healthy := p.Healthy()
-	if len(healthy) == 0 {
-		return nil, fmt.Errorf("no healthy backends available")
-	}
-	i := p.rrCursor.Add(1) - 1
-	return healthy[i%uint64(len(healthy))], nil
 }
