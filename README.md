@@ -1,4 +1,8 @@
-# VORTEX
+<p align="center">
+  <img src="assets/logo.svg" width="120" alt="VORTEX logo">
+</p>
+
+<h1 align="center">VORTEX</h1>
 
 High-performance Layer 4 (TCP) / Layer 7 (HTTP) load balancer built from scratch in Go.
 
