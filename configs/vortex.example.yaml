@@ -18,6 +18,23 @@ listeners:
     address: ":8080"
     protocol: http
 
+  # TLS termination: only supported on http listeners — VORTEX decrypts,
+  # then proxies plain HTTP to the backend. TCP listeners always pass raw
+  # bytes through undecrypted (TLS passthrough needs no extra config).
+  - name: https
+    address: ":8443"
+    protocol: http
+    tls:
+      enabled: true
+      certificate: certs/server.crt
+      key: certs/server.key
+      # Optional: serve a different certificate per SNI hostname, falling
+      # back to certificate/key above for anything else.
+      sni:
+        - host: app.example.com
+          certificate: certs/app.example.com.crt
+          key: certs/app.example.com.key
+
   - name: tcp
     address: ":9000"
     protocol: tcp

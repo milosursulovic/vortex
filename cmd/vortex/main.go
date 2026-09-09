@@ -3,6 +3,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -18,6 +19,7 @@ import (
 	"github.com/milosursulovic/vortex/internal/listener"
 	"github.com/milosursulovic/vortex/internal/proxy"
 	"github.com/milosursulovic/vortex/internal/router"
+	vortextls "github.com/milosursulovic/vortex/internal/tls"
 	"github.com/milosursulovic/vortex/pkg/logger"
 )
 
@@ -144,7 +146,15 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 				return nil, nil, err
 			}
 		case "http":
-			if err := mgr.StartHTTP(l, httpProxy, cfg.Timeouts); err != nil {
+			var tlsConfig *tls.Config
+			if l.TLS != nil && l.TLS.Enabled {
+				var err error
+				tlsConfig, err = vortextls.LoadConfig(*l.TLS)
+				if err != nil {
+					return nil, nil, fmt.Errorf("listener %q: %w", l.Name, err)
+				}
+			}
+			if err := mgr.StartHTTP(l, httpProxy, cfg.Timeouts, tlsConfig); err != nil {
 				return nil, nil, err
 			}
 		}

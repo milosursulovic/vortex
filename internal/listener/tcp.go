@@ -4,6 +4,7 @@ package listener
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,15 +64,25 @@ func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker
 }
 
 // StartHTTP binds cfg.Address and serves handler over HTTP/1.1, applying
-// the configured read/write/idle timeouts. It returns once the listener is
-// bound; serving happens in a background goroutine.
-func (m *Manager) StartHTTP(cfg config.ListenerConfig, handler http.Handler, timeouts config.TimeoutsConfig) error {
+// the configured read/write/idle timeouts. If tlsConfig is non-nil, the
+// listener terminates TLS before requests reach handler. It returns once
+// the listener is bound; serving happens in a background goroutine.
+func (m *Manager) StartHTTP(cfg config.ListenerConfig, handler http.Handler, timeouts config.TimeoutsConfig, tlsConfig *tls.Config) error {
 	ln, err := net.Listen("tcp", cfg.Address)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Address, err)
 	}
+
+	if tlsConfig != nil {
+		ln = tls.NewListener(ln, tlsConfig)
+	}
 	m.listeners = append(m.listeners, ln)
-	m.logger.Info("listener_started", "component", "http", "name", cfg.Name, "address", cfg.Address)
+
+	proto := "http"
+	if tlsConfig != nil {
+		proto = "https"
+	}
+	m.logger.Info("listener_started", "component", proto, "name", cfg.Name, "address", cfg.Address)
 
 	srv := &http.Server{
 		Handler:      handler,

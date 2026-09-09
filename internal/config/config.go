@@ -39,9 +39,28 @@ type LoggingConfig struct {
 }
 
 type ListenerConfig struct {
-	Name     string `yaml:"name"`
-	Address  string `yaml:"address"`
-	Protocol string `yaml:"protocol"`
+	Name     string     `yaml:"name"`
+	Address  string     `yaml:"address"`
+	Protocol string     `yaml:"protocol"`
+	TLS      *TLSConfig `yaml:"tls,omitempty"`
+}
+
+// TLSConfig enables TLS termination on an HTTP listener. TCP listeners
+// don't take TLS config: they proxy raw bytes and are always passthrough
+// (VORTEX never decrypts them).
+type TLSConfig struct {
+	Enabled     bool       `yaml:"enabled"`
+	Certificate string     `yaml:"certificate"`
+	Key         string     `yaml:"key"`
+	SNI         []SNIEntry `yaml:"sni,omitempty"`
+}
+
+// SNIEntry serves a different certificate for a specific TLS server name,
+// falling back to TLSConfig.Certificate/Key when no entry matches.
+type SNIEntry struct {
+	Host        string `yaml:"host"`
+	Certificate string `yaml:"certificate"`
+	Key         string `yaml:"key"`
 }
 
 type BackendConfig struct {
@@ -197,6 +216,20 @@ func (c *Config) validate() error {
 		case "http", "tcp":
 		default:
 			return fmt.Errorf("listener %q has unsupported protocol %q", l.Name, l.Protocol)
+		}
+
+		if l.TLS != nil && l.TLS.Enabled {
+			if l.Protocol != "http" {
+				return fmt.Errorf("listener %q: tls is only supported on http listeners (tcp listeners are always TLS passthrough)", l.Name)
+			}
+			if l.TLS.Certificate == "" || l.TLS.Key == "" {
+				return fmt.Errorf("listener %q: tls.certificate and tls.key are required when tls.enabled is true", l.Name)
+			}
+			for _, s := range l.TLS.SNI {
+				if s.Host == "" || s.Certificate == "" || s.Key == "" {
+					return fmt.Errorf("listener %q: tls.sni entries require host, certificate, and key", l.Name)
+				}
+			}
 		}
 	}
 
