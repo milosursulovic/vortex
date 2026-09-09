@@ -16,6 +16,8 @@ import (
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/health"
 	"github.com/milosursulovic/vortex/internal/listener"
+	"github.com/milosursulovic/vortex/internal/proxy"
+	"github.com/milosursulovic/vortex/internal/router"
 	"github.com/milosursulovic/vortex/pkg/logger"
 )
 
@@ -40,14 +42,16 @@ func run() error {
 	adminServer := admin.New(cfg.Admin.Address, log)
 	serveErrCh := adminServer.Start()
 
-	tcpManager, pool, err := startTCPListeners(cfg, log)
+	mgr, pools, err := startListeners(cfg, log)
 	if err != nil {
-		return fmt.Errorf("start tcp listeners: %w", err)
+		return fmt.Errorf("start listeners: %w", err)
 	}
 
 	healthCtx, stopHealthChecks := context.WithCancel(context.Background())
 	defer stopHealthChecks()
-	go health.NewMonitor(pool, cfg.HealthCheck, log).Run(healthCtx)
+	for _, pool := range pools {
+		go health.NewMonitor(pool, cfg.HealthCheck, log).Run(healthCtx)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -68,41 +72,94 @@ func run() error {
 		return fmt.Errorf("admin server shutdown: %w", err)
 	}
 
-	if err := tcpManager.Close(); err != nil {
-		log.Error("tcp_listener_close_failed", "error", err.Error())
+	if err := mgr.Close(); err != nil {
+		log.Error("listener_close_failed", "error", err.Error())
 	}
-	tcpManager.WaitClosed(shutdownCtx)
+	mgr.WaitClosed(shutdownCtx)
 
 	log.Info("shutdown_complete")
 	return nil
 }
 
-// startTCPListeners binds every TCP listener from the config, proxying to a
-// shared backend pool through the configured load-balancing algorithm.
-// HTTP listeners are accepted in config but not yet served (added in a
-// later phase).
-func startTCPListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, *backend.Pool, error) {
-	pool := backend.NewPool(cfg.Backends)
-
-	bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
-	if err != nil {
-		return nil, nil, err
-	}
-	log.Info("load_balancing_algorithm_selected", "algorithm", bal.Name())
-
-	picker := &balancer.Picker{Balancer: bal, Pool: pool}
+// startListeners binds every configured listener: TCP listeners proxy to a
+// shared flat backend pool, HTTP listeners route by host/path to named
+// backend pools. It returns every backend pool built, so callers can health
+// check them.
+func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []*backend.Pool, error) {
 	mgr := listener.NewManager(log)
+	var pools []*backend.Pool
+
+	hasTCPListener := false
+	hasHTTPListener := false
+	for _, l := range cfg.Listeners {
+		switch l.Protocol {
+		case "tcp":
+			hasTCPListener = true
+		case "http":
+			hasHTTPListener = true
+		}
+	}
+
+	var tcpPicker *balancer.Picker
+	if hasTCPListener {
+		tcpPool := backend.NewPool(cfg.Backends)
+		pools = append(pools, tcpPool)
+
+		bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
+		if err != nil {
+			return nil, nil, err
+		}
+		log.Info("load_balancing_algorithm_selected", "component", "tcp", "algorithm", bal.Name())
+		tcpPicker = &balancer.Picker{Balancer: bal, Pool: tcpPool}
+	}
+
+	var httpProxy *proxy.HTTPProxy
+	if hasHTTPListener {
+		routes := make([]router.Route, 0, len(cfg.Routes))
+		for _, rt := range cfg.Routes {
+			poolCfg := findBackendPool(cfg.BackendPools, rt.BackendPool)
+			pool := backend.NewPool(poolCfg.Backends)
+			pools = append(pools, pool)
+
+			bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			routes = append(routes, router.Route{
+				Host:     rt.Host,
+				Path:     rt.Path,
+				Pool:     pool,
+				Balancer: bal,
+			})
+		}
+		log.Info("load_balancing_algorithm_selected", "component", "http", "algorithm", cfg.LoadBalancing.Algorithm, "routes", len(routes))
+		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, log)
+	}
 
 	for _, l := range cfg.Listeners {
 		switch l.Protocol {
 		case "tcp":
-			if err := mgr.StartTCP(l, picker, cfg.Timeouts); err != nil {
+			if err := mgr.StartTCP(l, tcpPicker, cfg.Timeouts); err != nil {
 				return nil, nil, err
 			}
 		case "http":
-			log.Warn("http_listener_not_yet_implemented", "name", l.Name, "address", l.Address)
+			if err := mgr.StartHTTP(l, httpProxy, cfg.Timeouts); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 
-	return mgr, pool, nil
+	return mgr, pools, nil
+}
+
+func findBackendPool(pools []config.BackendPoolConfig, name string) config.BackendPoolConfig {
+	for _, p := range pools {
+		if p.Name == name {
+			return p
+		}
+	}
+	// Unreachable: config.validate() already rejects routes referencing an
+	// unknown backend_pool before this is ever called.
+	return config.BackendPoolConfig{}
 }

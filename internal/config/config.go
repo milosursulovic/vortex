@@ -15,7 +15,9 @@ type Config struct {
 	Admin         AdminConfig         `yaml:"admin"`
 	Logging       LoggingConfig       `yaml:"logging"`
 	Listeners     []ListenerConfig    `yaml:"listeners"`
-	Backends      []BackendConfig     `yaml:"backends"`
+	Backends      []BackendConfig     `yaml:"backends"` // flat pool used by TCP listeners
+	BackendPools  []BackendPoolConfig `yaml:"backend_pools"`
+	Routes        []RouteConfig       `yaml:"routes"`
 	LoadBalancing LoadBalancingConfig `yaml:"load_balancing"`
 	HealthCheck   HealthCheckConfig   `yaml:"health_check"`
 	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
@@ -46,6 +48,22 @@ type BackendConfig struct {
 	Name    string `yaml:"name"`
 	Address string `yaml:"address"`
 	Weight  int    `yaml:"weight"`
+}
+
+// BackendPoolConfig is a named group of backends, routed to by name from
+// RouteConfig.BackendPool. Used by HTTP listeners.
+type BackendPoolConfig struct {
+	Name     string          `yaml:"name"`
+	Backends []BackendConfig `yaml:"backends"`
+}
+
+// RouteConfig maps an incoming HTTP request to a named backend pool by
+// host (exact match; "" or "*" matches any host) and path (prefix match;
+// the longest matching path prefix wins).
+type RouteConfig struct {
+	Host        string `yaml:"host"`
+	Path        string `yaml:"path"`
+	BackendPool string `yaml:"backend_pool"`
 }
 
 type LoadBalancingConfig struct {
@@ -182,20 +200,60 @@ func (c *Config) validate() error {
 		}
 	}
 
-	backendNames := make(map[string]struct{}, len(c.Backends))
-	for _, b := range c.Backends {
+	if err := validateBackends(c.Backends); err != nil {
+		return fmt.Errorf("backends: %w", err)
+	}
+
+	poolNames := make(map[string]struct{}, len(c.BackendPools))
+	for _, p := range c.BackendPools {
+		if p.Name == "" {
+			return fmt.Errorf("backend_pool missing name")
+		}
+		if _, dup := poolNames[p.Name]; dup {
+			return fmt.Errorf("duplicate backend_pool name %q", p.Name)
+		}
+		poolNames[p.Name] = struct{}{}
+
+		if len(p.Backends) == 0 {
+			return fmt.Errorf("backend_pool %q has no backends", p.Name)
+		}
+		if err := validateBackends(p.Backends); err != nil {
+			return fmt.Errorf("backend_pool %q: %w", p.Name, err)
+		}
+	}
+
+	seenRoutes := make(map[string]struct{}, len(c.Routes))
+	for _, r := range c.Routes {
+		if r.Path == "" || r.Path[0] != '/' {
+			return fmt.Errorf("route for backend_pool %q has invalid path %q (must start with /)", r.BackendPool, r.Path)
+		}
+		if _, ok := poolNames[r.BackendPool]; !ok {
+			return fmt.Errorf("route %s%s references unknown backend_pool %q", r.Host, r.Path, r.BackendPool)
+		}
+		key := r.Host + "\x00" + r.Path
+		if _, dup := seenRoutes[key]; dup {
+			return fmt.Errorf("duplicate route for host %q path %q", r.Host, r.Path)
+		}
+		seenRoutes[key] = struct{}{}
+	}
+
+	return nil
+}
+
+func validateBackends(backends []BackendConfig) error {
+	names := make(map[string]struct{}, len(backends))
+	for _, b := range backends {
 		if b.Name == "" {
 			return fmt.Errorf("backend missing name")
 		}
-		if _, dup := backendNames[b.Name]; dup {
+		if _, dup := names[b.Name]; dup {
 			return fmt.Errorf("duplicate backend name %q", b.Name)
 		}
-		backendNames[b.Name] = struct{}{}
+		names[b.Name] = struct{}{}
 
 		if b.Address == "" {
 			return fmt.Errorf("backend %q missing address", b.Name)
 		}
 	}
-
 	return nil
 }

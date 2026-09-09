@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
 	"sync"
 
 	"github.com/milosursulovic/vortex/internal/config"
@@ -55,6 +56,35 @@ func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker
 				defer m.wg.Done()
 				proxy.ServeTCP(conn, picker, timeouts, m.logger)
 			}()
+		}
+	}()
+
+	return nil
+}
+
+// StartHTTP binds cfg.Address and serves handler over HTTP/1.1, applying
+// the configured read/write/idle timeouts. It returns once the listener is
+// bound; serving happens in a background goroutine.
+func (m *Manager) StartHTTP(cfg config.ListenerConfig, handler http.Handler, timeouts config.TimeoutsConfig) error {
+	ln, err := net.Listen("tcp", cfg.Address)
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", cfg.Address, err)
+	}
+	m.listeners = append(m.listeners, ln)
+	m.logger.Info("listener_started", "component", "http", "name", cfg.Name, "address", cfg.Address)
+
+	srv := &http.Server{
+		Handler:      handler,
+		ReadTimeout:  timeouts.Read.Duration(),
+		WriteTimeout: timeouts.Write.Duration(),
+		IdleTimeout:  timeouts.Idle.Duration(),
+	}
+
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			m.logger.Error("http_serve_error", "listener", cfg.Name, "error", err.Error())
 		}
 	}()
 

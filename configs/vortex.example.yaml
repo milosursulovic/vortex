@@ -22,6 +22,7 @@ listeners:
     address: ":9000"
     protocol: tcp
 
+# Flat pool used by TCP listeners.
 backends:
   - name: app-1
     address: "10.0.0.11:8080"
@@ -30,6 +31,30 @@ backends:
   - name: app-2
     address: "10.0.0.12:8080"
     weight: 2
+
+# Named pools used by HTTP listeners, selected per-request via routes below.
+backend_pools:
+  - name: api
+    backends:
+      - name: api-1
+        address: "10.0.0.21:8080"
+        weight: 1
+
+  - name: frontend
+    backends:
+      - name: web-1
+        address: "10.0.0.31:8080"
+        weight: 1
+
+# Host (exact match; "" or "*" = any host) + path (longest prefix wins).
+routes:
+  - host: api.example.com
+    path: /api
+    backend_pool: api
+
+  - host: ""
+    path: /
+    backend_pool: frontend
 
 load_balancing:
   algorithm: weighted_round_robin
