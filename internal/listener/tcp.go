@@ -13,29 +13,33 @@ import (
 	"sync"
 
 	"github.com/milosursulovic/vortex/internal/config"
+	"github.com/milosursulovic/vortex/internal/limits"
 	"github.com/milosursulovic/vortex/internal/proxy"
 )
 
 // Manager owns a set of TCP listeners and the goroutines serving them.
 type Manager struct {
-	logger    *slog.Logger
-	listeners []net.Listener
-	wg        sync.WaitGroup
+	logger      *slog.Logger
+	connLimiter *limits.ConnLimiter
+	listeners   []net.Listener
+	wg          sync.WaitGroup
 }
 
-// NewManager creates an empty listener manager.
-func NewManager(logger *slog.Logger) *Manager {
-	return &Manager{logger: logger}
+// NewManager creates an empty listener manager. connLimiter may be nil (or
+// configured with no max) to leave the global connection count unbounded.
+func NewManager(logger *slog.Logger, connLimiter *limits.ConnLimiter) *Manager {
+	return &Manager{logger: logger, connLimiter: connLimiter}
 }
 
 // StartTCP binds cfg.Address and begins accepting connections, proxying
 // each to a backend chosen by picker. It returns once the listener is bound;
 // accepting happens in a background goroutine.
-func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker, timeouts config.TimeoutsConfig) error {
+func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker, timeouts config.TimeoutsConfig, limitsCfg config.LimitsConfig) error {
 	ln, err := net.Listen("tcp", cfg.Address)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Address, err)
 	}
+	ln = limits.WrapListener(ln, m.connLimiter, m.logger, cfg.Name)
 	m.listeners = append(m.listeners, ln)
 	m.logger.Info("listener_started", "component", "tcp", "name", cfg.Name, "address", cfg.Address)
 
@@ -55,7 +59,7 @@ func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker
 			m.wg.Add(1)
 			go func() {
 				defer m.wg.Done()
-				proxy.ServeTCP(conn, picker, timeouts, m.logger)
+				proxy.ServeTCP(conn, picker, timeouts, limitsCfg, m.logger)
 			}()
 		}
 	}()
@@ -67,11 +71,12 @@ func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker
 // the configured read/write/idle timeouts. If tlsConfig is non-nil, the
 // listener terminates TLS before requests reach handler. It returns once
 // the listener is bound; serving happens in a background goroutine.
-func (m *Manager) StartHTTP(cfg config.ListenerConfig, handler http.Handler, timeouts config.TimeoutsConfig, tlsConfig *tls.Config) error {
+func (m *Manager) StartHTTP(cfg config.ListenerConfig, handler http.Handler, timeouts config.TimeoutsConfig, tlsConfig *tls.Config, limitsCfg config.LimitsConfig) error {
 	ln, err := net.Listen("tcp", cfg.Address)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.Address, err)
 	}
+	ln = limits.WrapListener(ln, m.connLimiter, m.logger, cfg.Name)
 
 	if tlsConfig != nil {
 		ln = tls.NewListener(ln, tlsConfig)
@@ -89,6 +94,9 @@ func (m *Manager) StartHTTP(cfg config.ListenerConfig, handler http.Handler, tim
 		ReadTimeout:  timeouts.Read.Duration(),
 		WriteTimeout: timeouts.Write.Duration(),
 		IdleTimeout:  timeouts.Idle.Duration(),
+	}
+	if limitsCfg.MaxHeaderSizeKB > 0 {
+		srv.MaxHeaderBytes = limitsCfg.MaxHeaderSizeKB * 1024
 	}
 
 	m.wg.Add(1)

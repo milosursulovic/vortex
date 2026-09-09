@@ -90,3 +90,32 @@ timeouts:
   read: 30s
   write: 30s
   idle: 60s
+
+# Resource caps. 0 means unlimited for any field here — these are opt-in.
+limits:
+  max_connections: 100000
+  max_connections_per_backend: 10000
+  max_request_body_mb: 10
+  max_header_size_kb: 64
+
+# HTTP-only. Token bucket, checked globally then (if enabled) per client IP.
+rate_limit:
+  enabled: false
+  requests_per_second: 1000
+  burst: 2000
+  per_ip: true
+  per_ip_requests_per_second: 100
+  per_ip_burst: 200
+
+# Per-backend: stop sending traffic to a backend after consecutive
+# connection failures, retry it after open_timeout via one trial request.
+circuit_breaker:
+  enabled: true
+  failure_threshold: 5
+  open_timeout: 30s
+
+# HTTP-only. Only GET/HEAD/OPTIONS are ever retried, regardless of config.
+retry:
+  enabled: false
+  max_retries: 2
+  retry_on: [connection_failure, timeout]

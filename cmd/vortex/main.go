@@ -16,8 +16,10 @@ import (
 	"github.com/milosursulovic/vortex/internal/balancer"
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/health"
+	"github.com/milosursulovic/vortex/internal/limits"
 	"github.com/milosursulovic/vortex/internal/listener"
 	"github.com/milosursulovic/vortex/internal/proxy"
+	"github.com/milosursulovic/vortex/internal/ratelimit"
 	"github.com/milosursulovic/vortex/internal/router"
 	vortextls "github.com/milosursulovic/vortex/internal/tls"
 	"github.com/milosursulovic/vortex/pkg/logger"
@@ -44,15 +46,18 @@ func run() error {
 	adminServer := admin.New(cfg.Admin.Address, log)
 	serveErrCh := adminServer.Start()
 
-	mgr, pools, err := startListeners(cfg, log)
+	mgr, pools, rateLimiter, err := startListeners(cfg, log)
 	if err != nil {
 		return fmt.Errorf("start listeners: %w", err)
 	}
 
-	healthCtx, stopHealthChecks := context.WithCancel(context.Background())
-	defer stopHealthChecks()
+	backgroundCtx, stopBackground := context.WithCancel(context.Background())
+	defer stopBackground()
 	for _, pool := range pools {
-		go health.NewMonitor(pool, cfg.HealthCheck, log).Run(healthCtx)
+		go health.NewMonitor(pool, cfg.HealthCheck, log).Run(backgroundCtx)
+	}
+	if rateLimiter != nil {
+		go rateLimiter.Run(backgroundCtx)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -85,10 +90,14 @@ func run() error {
 
 // startListeners binds every configured listener: TCP listeners proxy to a
 // shared flat backend pool, HTTP listeners route by host/path to named
-// backend pools. It returns every backend pool built, so callers can health
-// check them.
-func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []*backend.Pool, error) {
-	mgr := listener.NewManager(log)
+// backend pools. Every pool gets a circuit breaker per cfg.CircuitBreaker,
+// and a shared connection limiter (cfg.Limits.MaxConnections) gates both
+// TCP and HTTP listeners. It returns every backend pool built, so callers
+// can health check them, and the HTTP rate limiter (nil if disabled) so
+// callers can run its background reaper.
+func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []*backend.Pool, *ratelimit.Limiter, error) {
+	connLimiter := limits.NewConnLimiter(cfg.Limits.MaxConnections)
+	mgr := listener.NewManager(log, connLimiter)
 	var pools []*backend.Pool
 
 	hasTCPListener := false
@@ -105,27 +114,30 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 	var tcpPicker *balancer.Picker
 	if hasTCPListener {
 		tcpPool := backend.NewPool(cfg.Backends)
+		tcpPool.ConfigureCircuitBreakers(cfg.CircuitBreaker)
 		pools = append(pools, tcpPool)
 
 		bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		log.Info("load_balancing_algorithm_selected", "component", "tcp", "algorithm", bal.Name())
 		tcpPicker = &balancer.Picker{Balancer: bal, Pool: tcpPool}
 	}
 
 	var httpProxy *proxy.HTTPProxy
+	var rateLimiter *ratelimit.Limiter
 	if hasHTTPListener {
 		routes := make([]router.Route, 0, len(cfg.Routes))
 		for _, rt := range cfg.Routes {
 			poolCfg := findBackendPool(cfg.BackendPools, rt.BackendPool)
 			pool := backend.NewPool(poolCfg.Backends)
+			pool.ConfigureCircuitBreakers(cfg.CircuitBreaker)
 			pools = append(pools, pool)
 
 			bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 
 			routes = append(routes, router.Route{
@@ -136,14 +148,20 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 			})
 		}
 		log.Info("load_balancing_algorithm_selected", "component", "http", "algorithm", cfg.LoadBalancing.Algorithm, "routes", len(routes))
-		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, log)
+
+		if cfg.RateLimit.Enabled {
+			rateLimiter = ratelimit.New(cfg.RateLimit)
+			log.Info("rate_limiting_enabled", "requests_per_second", cfg.RateLimit.RequestsPerSecond, "burst", cfg.RateLimit.Burst, "per_ip", cfg.RateLimit.PerIP)
+		}
+
+		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, cfg.Limits, rateLimiter, cfg.Retry, log)
 	}
 
 	for _, l := range cfg.Listeners {
 		switch l.Protocol {
 		case "tcp":
-			if err := mgr.StartTCP(l, tcpPicker, cfg.Timeouts); err != nil {
-				return nil, nil, err
+			if err := mgr.StartTCP(l, tcpPicker, cfg.Timeouts, cfg.Limits); err != nil {
+				return nil, nil, nil, err
 			}
 		case "http":
 			var tlsConfig *tls.Config
@@ -151,16 +169,16 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 				var err error
 				tlsConfig, err = vortextls.LoadConfig(*l.TLS)
 				if err != nil {
-					return nil, nil, fmt.Errorf("listener %q: %w", l.Name, err)
+					return nil, nil, nil, fmt.Errorf("listener %q: %w", l.Name, err)
 				}
 			}
-			if err := mgr.StartHTTP(l, httpProxy, cfg.Timeouts, tlsConfig); err != nil {
-				return nil, nil, err
+			if err := mgr.StartHTTP(l, httpProxy, cfg.Timeouts, tlsConfig, cfg.Limits); err != nil {
+				return nil, nil, nil, err
 			}
 		}
 	}
 
-	return mgr, pools, nil
+	return mgr, pools, rateLimiter, nil
 }
 
 func findBackendPool(pools []config.BackendPoolConfig, name string) config.BackendPoolConfig {

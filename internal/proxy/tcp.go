@@ -23,14 +23,14 @@ type BackendPicker interface {
 // ServeTCP proxies clientConn to a backend chosen by picker until either
 // side closes, then cleans up both connections. It never returns while
 // leaving a connection open.
-func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.TimeoutsConfig, logger *slog.Logger) {
+func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.TimeoutsConfig, limits config.LimitsConfig, logger *slog.Logger) {
 	defer clientConn.Close()
 
 	conn := connection.New(clientConn.RemoteAddr().String())
 	logger.Info("connection_accepted", "connection_id", conn.ID, "client", conn.ClientAddr)
 
 	ctx := common.WithClientAddr(context.Background(), conn.ClientAddr)
-	target, err := picker.Next(ctx)
+	target, err := selectAvailableBackend(ctx, picker, limits.MaxConnectionsPerBackend)
 	if err != nil {
 		logger.Error("backend_selection_failed", "connection_id", conn.ID, "error", err.Error())
 		return
@@ -43,10 +43,12 @@ func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.Timeout
 	backendConn, err := dialer.Dial("tcp", target.Address)
 	if err != nil {
 		target.IncFailures()
+		target.Breaker().RecordFailure()
 		logger.Error("backend_connect_failed", "connection_id", conn.ID, "backend", target.Name, "address", target.Address, "error", err.Error())
 		return
 	}
 	defer backendConn.Close()
+	target.Breaker().RecordSuccess()
 
 	target.IncActiveConnections()
 	defer target.DecActiveConnections()

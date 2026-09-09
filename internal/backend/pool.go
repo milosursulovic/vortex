@@ -3,6 +3,7 @@ package backend
 import (
 	"sync"
 
+	"github.com/milosursulovic/vortex/internal/circuitbreaker"
 	"github.com/milosursulovic/vortex/internal/config"
 )
 
@@ -102,6 +103,15 @@ func (p *Pool) Drain(name string) bool {
 	}
 	b.SetState(StateDraining)
 	return true
+}
+
+// ConfigureCircuitBreakers gives every backend in the pool a freshly
+// configured circuit breaker. Call once, right after building the pool and
+// before starting any listener that will dispatch traffic to it.
+func (p *Pool) ConfigureCircuitBreakers(cfg config.CircuitBreakerConfig) {
+	for _, b := range p.All() {
+		b.ConfigureCircuitBreaker(circuitbreaker.New(cfg.Enabled, cfg.FailureThreshold, cfg.OpenTimeout.Duration()))
+	}
 }
 
 // Healthy returns every UP backend, in registration order.

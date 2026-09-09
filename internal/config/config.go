@@ -11,16 +11,20 @@ import (
 
 // Config is the root VORTEX configuration, matching vortex.yaml.
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	Admin         AdminConfig         `yaml:"admin"`
-	Logging       LoggingConfig       `yaml:"logging"`
-	Listeners     []ListenerConfig    `yaml:"listeners"`
-	Backends      []BackendConfig     `yaml:"backends"` // flat pool used by TCP listeners
-	BackendPools  []BackendPoolConfig `yaml:"backend_pools"`
-	Routes        []RouteConfig       `yaml:"routes"`
-	LoadBalancing LoadBalancingConfig `yaml:"load_balancing"`
-	HealthCheck   HealthCheckConfig   `yaml:"health_check"`
-	Timeouts      TimeoutsConfig      `yaml:"timeouts"`
+	Server         ServerConfig         `yaml:"server"`
+	Admin          AdminConfig          `yaml:"admin"`
+	Logging        LoggingConfig        `yaml:"logging"`
+	Listeners      []ListenerConfig     `yaml:"listeners"`
+	Backends       []BackendConfig      `yaml:"backends"` // flat pool used by TCP listeners
+	BackendPools   []BackendPoolConfig  `yaml:"backend_pools"`
+	Routes         []RouteConfig        `yaml:"routes"`
+	LoadBalancing  LoadBalancingConfig  `yaml:"load_balancing"`
+	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
+	Timeouts       TimeoutsConfig       `yaml:"timeouts"`
+	Limits         LimitsConfig         `yaml:"limits"`
+	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	Retry          RetryConfig          `yaml:"retry"`
 }
 
 type ServerConfig struct {
@@ -106,6 +110,44 @@ type TimeoutsConfig struct {
 	Idle    Duration `yaml:"idle"`
 }
 
+// LimitsConfig bounds resource usage so VORTEX can't be pushed into
+// unlimited memory/connection growth. Zero means "unlimited" for a field
+// (opt-in caps, not surprising defaults).
+type LimitsConfig struct {
+	MaxConnections           int `yaml:"max_connections"`
+	MaxConnectionsPerBackend int `yaml:"max_connections_per_backend"`
+	MaxRequestBodyMB         int `yaml:"max_request_body_mb"`
+	MaxHeaderSizeKB          int `yaml:"max_header_size_kb"`
+}
+
+// RateLimitConfig token-bucket-limits HTTP requests globally and, if
+// PerIP is set, per client IP. Disabled by default.
+type RateLimitConfig struct {
+	Enabled                bool    `yaml:"enabled"`
+	RequestsPerSecond      float64 `yaml:"requests_per_second"`
+	Burst                  int     `yaml:"burst"`
+	PerIP                  bool    `yaml:"per_ip"`
+	PerIPRequestsPerSecond float64 `yaml:"per_ip_requests_per_second"`
+	PerIPBurst             int     `yaml:"per_ip_burst"`
+}
+
+// CircuitBreakerConfig governs the per-backend breaker that stops sending
+// traffic to a backend after repeated connection failures.
+type CircuitBreakerConfig struct {
+	Enabled          bool     `yaml:"enabled"`
+	FailureThreshold int      `yaml:"failure_threshold"`
+	OpenTimeout      Duration `yaml:"open_timeout"`
+}
+
+// RetryConfig governs HTTP retry-on-failure. Only safe methods (GET, HEAD,
+// OPTIONS) are ever retried, regardless of config, since retrying a
+// consumed request body is not generally safe.
+type RetryConfig struct {
+	Enabled    bool     `yaml:"enabled"`
+	MaxRetries int      `yaml:"max_retries"`
+	RetryOn    []string `yaml:"retry_on"` // "connection_failure", "timeout"
+}
+
 // Load reads, expands environment variables in, parses, defaults, and
 // validates the configuration file at path.
 func Load(path string) (*Config, error) {
@@ -185,6 +227,17 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Timeouts.Idle == 0 {
 		c.Timeouts.Idle = Duration(60e9) // 60s
+	}
+
+	if c.CircuitBreaker.FailureThreshold <= 0 {
+		c.CircuitBreaker.FailureThreshold = 5
+	}
+	if c.CircuitBreaker.OpenTimeout == 0 {
+		c.CircuitBreaker.OpenTimeout = Duration(30e9) // 30s
+	}
+
+	if c.Retry.Enabled && len(c.Retry.RetryOn) == 0 {
+		c.Retry.RetryOn = []string{"connection_failure", "timeout"}
 	}
 }
 
@@ -268,6 +321,42 @@ func (c *Config) validate() error {
 			return fmt.Errorf("duplicate route for host %q path %q", r.Host, r.Path)
 		}
 		seenRoutes[key] = struct{}{}
+	}
+
+	if c.Limits.MaxConnections < 0 || c.Limits.MaxConnectionsPerBackend < 0 ||
+		c.Limits.MaxRequestBodyMB < 0 || c.Limits.MaxHeaderSizeKB < 0 {
+		return fmt.Errorf("limits: values must not be negative")
+	}
+
+	if c.RateLimit.Enabled {
+		if c.RateLimit.RequestsPerSecond <= 0 || c.RateLimit.Burst <= 0 {
+			return fmt.Errorf("rate_limit: requests_per_second and burst must be > 0 when enabled")
+		}
+		if c.RateLimit.PerIP && (c.RateLimit.PerIPRequestsPerSecond <= 0 || c.RateLimit.PerIPBurst <= 0) {
+			return fmt.Errorf("rate_limit: per_ip_requests_per_second and per_ip_burst must be > 0 when per_ip is enabled")
+		}
+	}
+
+	if c.CircuitBreaker.Enabled {
+		if c.CircuitBreaker.FailureThreshold <= 0 {
+			return fmt.Errorf("circuit_breaker: failure_threshold must be > 0 when enabled")
+		}
+		if c.CircuitBreaker.OpenTimeout <= 0 {
+			return fmt.Errorf("circuit_breaker: open_timeout must be > 0 when enabled")
+		}
+	}
+
+	if c.Retry.Enabled {
+		if c.Retry.MaxRetries < 0 {
+			return fmt.Errorf("retry: max_retries must not be negative")
+		}
+		for _, r := range c.Retry.RetryOn {
+			switch r {
+			case "connection_failure", "timeout":
+			default:
+				return fmt.Errorf("retry: unsupported retry_on value %q", r)
+			}
+		}
 	}
 
 	return nil
