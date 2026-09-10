@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -12,6 +13,12 @@ type Duration time.Duration
 
 func (d Duration) Duration() time.Duration {
 	return time.Duration(d)
+}
+
+// MarshalJSON renders as a string ("30s") for admin API readability,
+// rather than a raw nanosecond count.
+func (d Duration) MarshalJSON() ([]byte, error) {
+	return json.Marshal(time.Duration(d).String())
 }
 
 func (d *Duration) UnmarshalYAML(value *yaml.Node) error {

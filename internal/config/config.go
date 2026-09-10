@@ -11,141 +11,141 @@ import (
 
 // Config is the root VORTEX configuration, matching vortex.yaml.
 type Config struct {
-	Server         ServerConfig         `yaml:"server"`
-	Admin          AdminConfig          `yaml:"admin"`
-	Logging        LoggingConfig        `yaml:"logging"`
-	Listeners      []ListenerConfig     `yaml:"listeners"`
-	Backends       []BackendConfig      `yaml:"backends"` // flat pool used by TCP listeners
-	BackendPools   []BackendPoolConfig  `yaml:"backend_pools"`
-	Routes         []RouteConfig        `yaml:"routes"`
-	LoadBalancing  LoadBalancingConfig  `yaml:"load_balancing"`
-	HealthCheck    HealthCheckConfig    `yaml:"health_check"`
-	Timeouts       TimeoutsConfig       `yaml:"timeouts"`
-	Limits         LimitsConfig         `yaml:"limits"`
-	RateLimit      RateLimitConfig      `yaml:"rate_limit"`
-	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-	Retry          RetryConfig          `yaml:"retry"`
+	Server         ServerConfig         `yaml:"server" json:"server"`
+	Admin          AdminConfig          `yaml:"admin" json:"admin"`
+	Logging        LoggingConfig        `yaml:"logging" json:"logging"`
+	Listeners      []ListenerConfig     `yaml:"listeners" json:"listeners"`
+	Backends       []BackendConfig      `yaml:"backends" json:"backends"` // flat pool used by TCP listeners
+	BackendPools   []BackendPoolConfig  `yaml:"backend_pools" json:"backend_pools"`
+	Routes         []RouteConfig        `yaml:"routes" json:"routes"`
+	LoadBalancing  LoadBalancingConfig  `yaml:"load_balancing" json:"load_balancing"`
+	HealthCheck    HealthCheckConfig    `yaml:"health_check" json:"health_check"`
+	Timeouts       TimeoutsConfig       `yaml:"timeouts" json:"timeouts"`
+	Limits         LimitsConfig         `yaml:"limits" json:"limits"`
+	RateLimit      RateLimitConfig      `yaml:"rate_limit" json:"rate_limit"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker" json:"circuit_breaker"`
+	Retry          RetryConfig          `yaml:"retry" json:"retry"`
 }
 
 type ServerConfig struct {
-	Workers         int      `yaml:"workers"`
-	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
+	Workers         int      `yaml:"workers" json:"workers"`
+	ShutdownTimeout Duration `yaml:"shutdown_timeout" json:"shutdown_timeout"`
 }
 
 // AdminConfig configures VORTEX's internal admin/health HTTP server.
 type AdminConfig struct {
-	Address string `yaml:"address"`
+	Address string `yaml:"address" json:"address"`
 }
 
 type LoggingConfig struct {
-	Level  string `yaml:"level"`
-	Format string `yaml:"format"`
+	Level  string `yaml:"level" json:"level"`
+	Format string `yaml:"format" json:"format"`
 }
 
 type ListenerConfig struct {
-	Name     string     `yaml:"name"`
-	Address  string     `yaml:"address"`
-	Protocol string     `yaml:"protocol"`
-	TLS      *TLSConfig `yaml:"tls,omitempty"`
+	Name     string     `yaml:"name" json:"name"`
+	Address  string     `yaml:"address" json:"address"`
+	Protocol string     `yaml:"protocol" json:"protocol"`
+	TLS      *TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
 }
 
 // TLSConfig enables TLS termination on an HTTP listener. TCP listeners
 // don't take TLS config: they proxy raw bytes and are always passthrough
 // (VORTEX never decrypts them).
 type TLSConfig struct {
-	Enabled     bool       `yaml:"enabled"`
-	Certificate string     `yaml:"certificate"`
-	Key         string     `yaml:"key"`
-	SNI         []SNIEntry `yaml:"sni,omitempty"`
+	Enabled     bool       `yaml:"enabled" json:"enabled"`
+	Certificate string     `yaml:"certificate" json:"certificate"`
+	Key         string     `yaml:"key" json:"key"`
+	SNI         []SNIEntry `yaml:"sni,omitempty" json:"sni,omitempty"`
 }
 
 // SNIEntry serves a different certificate for a specific TLS server name,
 // falling back to TLSConfig.Certificate/Key when no entry matches.
 type SNIEntry struct {
-	Host        string `yaml:"host"`
-	Certificate string `yaml:"certificate"`
-	Key         string `yaml:"key"`
+	Host        string `yaml:"host" json:"host"`
+	Certificate string `yaml:"certificate" json:"certificate"`
+	Key         string `yaml:"key" json:"key"`
 }
 
 type BackendConfig struct {
-	Name    string `yaml:"name"`
-	Address string `yaml:"address"`
-	Weight  int    `yaml:"weight"`
+	Name    string `yaml:"name" json:"name"`
+	Address string `yaml:"address" json:"address"`
+	Weight  int    `yaml:"weight" json:"weight"`
 }
 
 // BackendPoolConfig is a named group of backends, routed to by name from
 // RouteConfig.BackendPool. Used by HTTP listeners.
 type BackendPoolConfig struct {
-	Name     string          `yaml:"name"`
-	Backends []BackendConfig `yaml:"backends"`
+	Name     string          `yaml:"name" json:"name"`
+	Backends []BackendConfig `yaml:"backends" json:"backends"`
 }
 
 // RouteConfig maps an incoming HTTP request to a named backend pool by
 // host (exact match; "" or "*" matches any host) and path (prefix match;
 // the longest matching path prefix wins).
 type RouteConfig struct {
-	Host        string `yaml:"host"`
-	Path        string `yaml:"path"`
-	BackendPool string `yaml:"backend_pool"`
+	Host        string `yaml:"host" json:"host"`
+	Path        string `yaml:"path" json:"path"`
+	BackendPool string `yaml:"backend_pool" json:"backend_pool"`
 }
 
 type LoadBalancingConfig struct {
-	Algorithm string `yaml:"algorithm"`
+	Algorithm string `yaml:"algorithm" json:"algorithm"`
 }
 
 type HealthCheckConfig struct {
-	Enabled            bool     `yaml:"enabled"`
-	Type               string   `yaml:"type"` // "tcp" (default) or "http"
-	Path               string   `yaml:"path"` // HTTP check path, default "/health"
-	Interval           Duration `yaml:"interval"`
-	Timeout            Duration `yaml:"timeout"`
-	UnhealthyThreshold int      `yaml:"unhealthy_threshold"`
-	HealthyThreshold   int      `yaml:"healthy_threshold"`
+	Enabled            bool     `yaml:"enabled" json:"enabled"`
+	Type               string   `yaml:"type" json:"type"` // "tcp" (default) or "http"
+	Path               string   `yaml:"path" json:"path"` // HTTP check path, default "/health"
+	Interval           Duration `yaml:"interval" json:"interval"`
+	Timeout            Duration `yaml:"timeout" json:"timeout"`
+	UnhealthyThreshold int      `yaml:"unhealthy_threshold" json:"unhealthy_threshold"`
+	HealthyThreshold   int      `yaml:"healthy_threshold" json:"healthy_threshold"`
 }
 
 type TimeoutsConfig struct {
-	Connect Duration `yaml:"connect"`
-	Read    Duration `yaml:"read"`
-	Write   Duration `yaml:"write"`
-	Idle    Duration `yaml:"idle"`
+	Connect Duration `yaml:"connect" json:"connect"`
+	Read    Duration `yaml:"read" json:"read"`
+	Write   Duration `yaml:"write" json:"write"`
+	Idle    Duration `yaml:"idle" json:"idle"`
 }
 
 // LimitsConfig bounds resource usage so VORTEX can't be pushed into
 // unlimited memory/connection growth. Zero means "unlimited" for a field
 // (opt-in caps, not surprising defaults).
 type LimitsConfig struct {
-	MaxConnections           int `yaml:"max_connections"`
-	MaxConnectionsPerBackend int `yaml:"max_connections_per_backend"`
-	MaxRequestBodyMB         int `yaml:"max_request_body_mb"`
-	MaxHeaderSizeKB          int `yaml:"max_header_size_kb"`
+	MaxConnections           int `yaml:"max_connections" json:"max_connections"`
+	MaxConnectionsPerBackend int `yaml:"max_connections_per_backend" json:"max_connections_per_backend"`
+	MaxRequestBodyMB         int `yaml:"max_request_body_mb" json:"max_request_body_mb"`
+	MaxHeaderSizeKB          int `yaml:"max_header_size_kb" json:"max_header_size_kb"`
 }
 
 // RateLimitConfig token-bucket-limits HTTP requests globally and, if
 // PerIP is set, per client IP. Disabled by default.
 type RateLimitConfig struct {
-	Enabled                bool    `yaml:"enabled"`
-	RequestsPerSecond      float64 `yaml:"requests_per_second"`
-	Burst                  int     `yaml:"burst"`
-	PerIP                  bool    `yaml:"per_ip"`
-	PerIPRequestsPerSecond float64 `yaml:"per_ip_requests_per_second"`
-	PerIPBurst             int     `yaml:"per_ip_burst"`
+	Enabled                bool    `yaml:"enabled" json:"enabled"`
+	RequestsPerSecond      float64 `yaml:"requests_per_second" json:"requests_per_second"`
+	Burst                  int     `yaml:"burst" json:"burst"`
+	PerIP                  bool    `yaml:"per_ip" json:"per_ip"`
+	PerIPRequestsPerSecond float64 `yaml:"per_ip_requests_per_second" json:"per_ip_requests_per_second"`
+	PerIPBurst             int     `yaml:"per_ip_burst" json:"per_ip_burst"`
 }
 
 // CircuitBreakerConfig governs the per-backend breaker that stops sending
 // traffic to a backend after repeated connection failures.
 type CircuitBreakerConfig struct {
-	Enabled          bool     `yaml:"enabled"`
-	FailureThreshold int      `yaml:"failure_threshold"`
-	OpenTimeout      Duration `yaml:"open_timeout"`
+	Enabled          bool     `yaml:"enabled" json:"enabled"`
+	FailureThreshold int      `yaml:"failure_threshold" json:"failure_threshold"`
+	OpenTimeout      Duration `yaml:"open_timeout" json:"open_timeout"`
 }
 
 // RetryConfig governs HTTP retry-on-failure. Only safe methods (GET, HEAD,
 // OPTIONS) are ever retried, regardless of config, since retrying a
 // consumed request body is not generally safe.
 type RetryConfig struct {
-	Enabled    bool     `yaml:"enabled"`
-	MaxRetries int      `yaml:"max_retries"`
-	RetryOn    []string `yaml:"retry_on"` // "connection_failure", "timeout"
+	Enabled    bool     `yaml:"enabled" json:"enabled"`
+	MaxRetries int      `yaml:"max_retries" json:"max_retries"`
+	RetryOn    []string `yaml:"retry_on" json:"retry_on"` // "connection_failure", "timeout"
 }
 
 // Load reads, expands environment variables in, parses, defaults, and
@@ -290,6 +290,14 @@ func (c *Config) validate() error {
 		return fmt.Errorf("backends: %w", err)
 	}
 
+	// Backend names must be unique across the whole config (flat backends
+	// plus every backend_pool), not just within one pool: the admin API and
+	// vortexctl address a backend by bare name alone.
+	globalBackendNames := make(map[string]struct{})
+	for _, b := range c.Backends {
+		globalBackendNames[b.Name] = struct{}{}
+	}
+
 	poolNames := make(map[string]struct{}, len(c.BackendPools))
 	for _, p := range c.BackendPools {
 		if p.Name == "" {
@@ -305,6 +313,12 @@ func (c *Config) validate() error {
 		}
 		if err := validateBackends(p.Backends); err != nil {
 			return fmt.Errorf("backend_pool %q: %w", p.Name, err)
+		}
+		for _, b := range p.Backends {
+			if _, dup := globalBackendNames[b.Name]; dup {
+				return fmt.Errorf("backend name %q is used in more than one pool; names must be globally unique", b.Name)
+			}
+			globalBackendNames[b.Name] = struct{}{}
 		}
 	}
 

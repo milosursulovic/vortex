@@ -18,8 +18,10 @@ import (
 	"github.com/milosursulovic/vortex/internal/health"
 	"github.com/milosursulovic/vortex/internal/limits"
 	"github.com/milosursulovic/vortex/internal/listener"
+	"github.com/milosursulovic/vortex/internal/metrics"
 	"github.com/milosursulovic/vortex/internal/proxy"
 	"github.com/milosursulovic/vortex/internal/ratelimit"
+	"github.com/milosursulovic/vortex/internal/reload"
 	"github.com/milosursulovic/vortex/internal/router"
 	vortextls "github.com/milosursulovic/vortex/internal/tls"
 	"github.com/milosursulovic/vortex/pkg/logger"
@@ -42,14 +44,30 @@ func run() error {
 	}
 
 	log := logger.New(cfg.Logging.Level, cfg.Logging.Format)
+	stats := metrics.New()
 
-	adminServer := admin.New(cfg.Admin.Address, log)
-	serveErrCh := adminServer.Start()
-
-	mgr, pools, rateLimiter, err := startListeners(cfg, log)
+	mgr, pools, rateLimiter, err := startListeners(cfg, stats, log)
 	if err != nil {
 		return fmt.Errorf("start listeners: %w", err)
 	}
+
+	registry := admin.NewRegistry(pools)
+
+	var adminServer *admin.Server
+	reloadFn := func() error {
+		newCfg, err := config.Load(*configPath)
+		if err != nil {
+			return err
+		}
+		reload.Apply(newCfg, pools, log)
+		if adminServer != nil {
+			adminServer.UpdateConfig(newCfg)
+		}
+		log.Info("configuration_reloaded")
+		return nil
+	}
+	adminServer = admin.New(cfg.Admin.Address, log, registry, stats, cfg, reloadFn)
+	serveErrCh := adminServer.Start()
 
 	backgroundCtx, stopBackground := context.WithCancel(context.Background())
 	defer stopBackground()
@@ -59,6 +77,7 @@ func run() error {
 	if rateLimiter != nil {
 		go rateLimiter.Run(backgroundCtx)
 	}
+	go watchReloadSignal(backgroundCtx, reloadFn, log)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -88,17 +107,38 @@ func run() error {
 	return nil
 }
 
+// watchReloadSignal re-applies config on SIGHUP until ctx is done, mirroring
+// what POST /admin/reload does.
+func watchReloadSignal(ctx context.Context, reloadFn func() error, log *slog.Logger) {
+	sighup := make(chan os.Signal, 1)
+	signal.Notify(sighup, syscall.SIGHUP)
+	defer signal.Stop(sighup)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-sighup:
+			log.Info("reload_signal_received")
+			if err := reloadFn(); err != nil {
+				log.Error("reload_failed", "error", err.Error())
+			}
+		}
+	}
+}
+
 // startListeners binds every configured listener: TCP listeners proxy to a
 // shared flat backend pool, HTTP listeners route by host/path to named
 // backend pools. Every pool gets a circuit breaker per cfg.CircuitBreaker,
 // and a shared connection limiter (cfg.Limits.MaxConnections) gates both
-// TCP and HTTP listeners. It returns every backend pool built, so callers
-// can health check them, and the HTTP rate limiter (nil if disabled) so
+// TCP and HTTP listeners. It returns every backend pool built, keyed "tcp"
+// for the flat pool or by backend_pool name, so callers can health check
+// and administer them; and the HTTP rate limiter (nil if disabled) so
 // callers can run its background reaper.
-func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []*backend.Pool, *ratelimit.Limiter, error) {
+func startListeners(cfg *config.Config, stats *metrics.Stats, log *slog.Logger) (*listener.Manager, map[string]*backend.Pool, *ratelimit.Limiter, error) {
 	connLimiter := limits.NewConnLimiter(cfg.Limits.MaxConnections)
-	mgr := listener.NewManager(log, connLimiter)
-	var pools []*backend.Pool
+	mgr := listener.NewManager(log, connLimiter, stats)
+	pools := make(map[string]*backend.Pool)
 
 	hasTCPListener := false
 	hasHTTPListener := false
@@ -115,7 +155,7 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 	if hasTCPListener {
 		tcpPool := backend.NewPool(cfg.Backends)
 		tcpPool.ConfigureCircuitBreakers(cfg.CircuitBreaker)
-		pools = append(pools, tcpPool)
+		pools["tcp"] = tcpPool
 
 		bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
 		if err != nil {
@@ -133,7 +173,7 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 			poolCfg := findBackendPool(cfg.BackendPools, rt.BackendPool)
 			pool := backend.NewPool(poolCfg.Backends)
 			pool.ConfigureCircuitBreakers(cfg.CircuitBreaker)
-			pools = append(pools, pool)
+			pools[poolCfg.Name] = pool
 
 			bal, err := balancer.New(cfg.LoadBalancing.Algorithm)
 			if err != nil {
@@ -154,7 +194,7 @@ func startListeners(cfg *config.Config, log *slog.Logger) (*listener.Manager, []
 			log.Info("rate_limiting_enabled", "requests_per_second", cfg.RateLimit.RequestsPerSecond, "burst", cfg.RateLimit.Burst, "per_ip", cfg.RateLimit.PerIP)
 		}
 
-		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, cfg.Limits, rateLimiter, cfg.Retry, log)
+		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, cfg.Limits, rateLimiter, cfg.Retry, stats, log)
 	}
 
 	for _, l := range cfg.Listeners {

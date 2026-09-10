@@ -14,6 +14,7 @@ import (
 
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/limits"
+	"github.com/milosursulovic/vortex/internal/metrics"
 	"github.com/milosursulovic/vortex/internal/proxy"
 )
 
@@ -21,14 +22,15 @@ import (
 type Manager struct {
 	logger      *slog.Logger
 	connLimiter *limits.ConnLimiter
+	stats       *metrics.Stats
 	listeners   []net.Listener
 	wg          sync.WaitGroup
 }
 
 // NewManager creates an empty listener manager. connLimiter may be nil (or
 // configured with no max) to leave the global connection count unbounded.
-func NewManager(logger *slog.Logger, connLimiter *limits.ConnLimiter) *Manager {
-	return &Manager{logger: logger, connLimiter: connLimiter}
+func NewManager(logger *slog.Logger, connLimiter *limits.ConnLimiter, stats *metrics.Stats) *Manager {
+	return &Manager{logger: logger, connLimiter: connLimiter, stats: stats}
 }
 
 // StartTCP binds cfg.Address and begins accepting connections, proxying
@@ -59,7 +61,7 @@ func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker
 			m.wg.Add(1)
 			go func() {
 				defer m.wg.Done()
-				proxy.ServeTCP(conn, picker, timeouts, limitsCfg, m.logger)
+				proxy.ServeTCP(conn, picker, timeouts, limitsCfg, m.stats, m.logger)
 			}()
 		}
 	}()

@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/milosursulovic/vortex/internal/balancer"
 	"github.com/milosursulovic/vortex/internal/common"
 	"github.com/milosursulovic/vortex/internal/config"
+	"github.com/milosursulovic/vortex/internal/metrics"
 	"github.com/milosursulovic/vortex/internal/ratelimit"
 	"github.com/milosursulovic/vortex/internal/router"
 )
@@ -31,12 +33,13 @@ type HTTPProxy struct {
 	limits      config.LimitsConfig
 	rateLimiter *ratelimit.Limiter // nil disables rate limiting
 	retry       config.RetryConfig
+	stats       *metrics.Stats
 }
 
 // NewHTTPProxy builds an HTTP proxy handler for r, dialing backends with
 // timeouts.Connect and reusing idle backend connections per timeouts.Idle.
 // rateLimiter may be nil to disable rate limiting.
-func NewHTTPProxy(r *router.Router, timeouts config.TimeoutsConfig, limitsCfg config.LimitsConfig, rateLimiter *ratelimit.Limiter, retryCfg config.RetryConfig, logger *slog.Logger) *HTTPProxy {
+func NewHTTPProxy(r *router.Router, timeouts config.TimeoutsConfig, limitsCfg config.LimitsConfig, rateLimiter *ratelimit.Limiter, retryCfg config.RetryConfig, stats *metrics.Stats, logger *slog.Logger) *HTTPProxy {
 	transport := &trackingTransport{
 		base: &http.Transport{
 			DialContext: (&net.Dialer{
@@ -44,6 +47,7 @@ func NewHTTPProxy(r *router.Router, timeouts config.TimeoutsConfig, limitsCfg co
 			}).DialContext,
 			IdleConnTimeout: timeouts.Idle.Duration(),
 		},
+		stats: stats,
 	}
 
 	p := &HTTPProxy{
@@ -53,6 +57,7 @@ func NewHTTPProxy(r *router.Router, timeouts config.TimeoutsConfig, limitsCfg co
 		limits:      limitsCfg,
 		rateLimiter: rateLimiter,
 		retry:       retryCfg,
+		stats:       stats,
 	}
 	p.reverse = &httputil.ReverseProxy{
 		Rewrite:      p.rewrite,
@@ -63,29 +68,40 @@ func NewHTTPProxy(r *router.Router, timeouts config.TimeoutsConfig, limitsCfg co
 }
 
 func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.stats.RequestsTotal.Add(1)
+
+	cw := &countingResponseWriter{ResponseWriter: w}
+	cr := &countingReadCloser{ReadCloser: r.Body}
+	r.Body = cr
+	defer func() {
+		p.stats.BytesReceived.Add(cr.n)
+		p.stats.BytesSent.Add(cw.n)
+	}()
+
 	clientIP := clientHost(r.RemoteAddr)
 
 	if p.rateLimiter != nil && !p.rateLimiter.Allow(clientIP) {
-		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+		http.Error(cw, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
 
 	route, ok := p.router.Match(r.Host, r.URL.Path)
 	if !ok {
-		http.Error(w, "no matching route", http.StatusNotFound)
+		http.Error(cw, "no matching route", http.StatusNotFound)
 		return
 	}
 
 	if p.limits.MaxRequestBodyMB > 0 {
-		r.Body = http.MaxBytesReader(w, r.Body, int64(p.limits.MaxRequestBodyMB)*1024*1024)
+		r.Body = http.MaxBytesReader(cw, r.Body, int64(p.limits.MaxRequestBodyMB)*1024*1024)
 	}
 
 	ctx := common.WithClientAddr(r.Context(), r.RemoteAddr)
 	picker := &balancer.Picker{Balancer: route.Balancer, Pool: route.Pool}
 	target, err := selectAvailableBackend(ctx, picker, p.limits.MaxConnectionsPerBackend)
 	if err != nil {
+		p.stats.ErrorsTotal.Add(1)
 		p.logger.Error("backend_selection_failed", "host", r.Host, "path", r.URL.Path, "error", err.Error())
-		http.Error(w, "no healthy backend", http.StatusServiceUnavailable)
+		http.Error(cw, "no healthy backend", http.StatusServiceUnavailable)
 		return
 	}
 
@@ -94,7 +110,7 @@ func (p *HTTPProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ctx = withSelectedBackend(ctx, target)
 	ctx = withRoute(ctx, route)
-	p.reverse.ServeHTTP(w, r.WithContext(ctx))
+	p.reverse.ServeHTTP(cw, r.WithContext(ctx))
 }
 
 // rewrite points the outgoing request at the backend chosen in ServeHTTP.
@@ -144,6 +160,7 @@ func (p *HTTPProxy) errorHandler(w http.ResponseWriter, r *http.Request, err err
 		}
 	}
 
+	p.stats.ErrorsTotal.Add(1)
 	p.logger.Error("proxy_error", "host", r.Host, "path", r.URL.Path, "error", err.Error())
 	http.Error(w, "backend unavailable", http.StatusBadGateway)
 }
@@ -171,7 +188,8 @@ func classifyError(err error) string {
 // counters, failure counter, and circuit breaker in sync with actual round
 // trips.
 type trackingTransport struct {
-	base *http.Transport
+	base  *http.Transport
+	stats *metrics.Stats
 }
 
 func (t *trackingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -189,8 +207,33 @@ func (t *trackingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		target.Breaker().RecordFailure()
 	} else {
 		target.Breaker().RecordSuccess()
+		t.stats.ResponsesTotal.Add(1)
 	}
 	return resp, err
+}
+
+// countingResponseWriter tracks bytes written to the client.
+type countingResponseWriter struct {
+	http.ResponseWriter
+	n int64
+}
+
+func (w *countingResponseWriter) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.n += int64(n)
+	return n, err
+}
+
+// countingReadCloser tracks bytes read from the client request body.
+type countingReadCloser struct {
+	io.ReadCloser
+	n int64
+}
+
+func (r *countingReadCloser) Read(b []byte) (int, error) {
+	n, err := r.ReadCloser.Read(b)
+	r.n += int64(n)
+	return n, err
 }
 
 func clientHost(remoteAddr string) string {

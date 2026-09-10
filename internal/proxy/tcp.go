@@ -13,6 +13,7 @@ import (
 	"github.com/milosursulovic/vortex/internal/common"
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/connection"
+	"github.com/milosursulovic/vortex/internal/metrics"
 )
 
 // BackendPicker selects the next backend for a new connection.
@@ -23,15 +24,20 @@ type BackendPicker interface {
 // ServeTCP proxies clientConn to a backend chosen by picker until either
 // side closes, then cleans up both connections. It never returns while
 // leaving a connection open.
-func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.TimeoutsConfig, limits config.LimitsConfig, logger *slog.Logger) {
+func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.TimeoutsConfig, limits config.LimitsConfig, stats *metrics.Stats, logger *slog.Logger) {
 	defer clientConn.Close()
 
 	conn := connection.New(clientConn.RemoteAddr().String())
 	logger.Info("connection_accepted", "connection_id", conn.ID, "client", conn.ClientAddr)
 
+	stats.ConnectionsTotal.Add(1)
+	stats.ConnectionsActive.Add(1)
+	defer stats.ConnectionsActive.Add(-1)
+
 	ctx := common.WithClientAddr(context.Background(), conn.ClientAddr)
 	target, err := selectAvailableBackend(ctx, picker, limits.MaxConnectionsPerBackend)
 	if err != nil {
+		stats.ErrorsTotal.Add(1)
 		logger.Error("backend_selection_failed", "connection_id", conn.ID, "error", err.Error())
 		return
 	}
@@ -44,6 +50,7 @@ func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.Timeout
 	if err != nil {
 		target.IncFailures()
 		target.Breaker().RecordFailure()
+		stats.ErrorsTotal.Add(1)
 		logger.Error("backend_connect_failed", "connection_id", conn.ID, "backend", target.Name, "address", target.Address, "error", err.Error())
 		return
 	}
@@ -80,6 +87,8 @@ func ServeTCP(clientConn net.Conn, picker BackendPicker, timeouts config.Timeout
 	<-done
 
 	conn.SetState(connection.StateClosed)
+	stats.BytesReceived.Add(conn.BytesReceived())
+	stats.BytesSent.Add(conn.BytesSent())
 	logger.Info("connection_closed",
 		"connection_id", conn.ID,
 		"duration_ms", conn.Duration().Milliseconds(),

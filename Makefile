@@ -2,6 +2,7 @@
 
 build:
 	go build -o bin/vortex ./cmd/vortex
+	go build -o bin/vortexctl ./cmd/vortexctl
 
 run: build
 	./bin/vortex -config configs/vortex.yaml
