@@ -48,6 +48,22 @@ per-backend address/weight (add/update/remove), preserving already-open
 connections. It does not rebind listeners, change TLS certificates, or
 swap the load-balancing algorithm — those need a restart.
 
+## Observability
+
+- **Metrics**: Prometheus format at `GET /metrics` on the admin server —
+  connection/request/byte counters, per-backend connections/errors/health,
+  and request/backend-latency histograms. Always on, no config needed.
+- **Tracing**: optional OpenTelemetry tracing for HTTP requests (`tracing.*`
+  in the config) — a span per request plus a child span per backend round
+  trip, with routing decision, selected backend, and errors as attributes.
+  Trace context propagates to the backend via a standard `traceparent`
+  header. Exports to stdout or an OTLP/HTTP collector; disabled by default.
+- **Profiling**: `debug.pprof_enabled: true` mounts `net/http/pprof` under
+  `/debug/pprof/` on the admin server (already private) for CPU, heap,
+  goroutine, mutex, and blocking profiles. Off by default — sampling has
+  real overhead.
+- **Logs**: structured JSON via `log/slog` to stdout (from Phase 1).
+
 ## Development
 
 ```sh

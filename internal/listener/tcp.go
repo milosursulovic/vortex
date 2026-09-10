@@ -22,15 +22,15 @@ import (
 type Manager struct {
 	logger      *slog.Logger
 	connLimiter *limits.ConnLimiter
-	stats       *metrics.Stats
+	rec         *metrics.Recorder
 	listeners   []net.Listener
 	wg          sync.WaitGroup
 }
 
 // NewManager creates an empty listener manager. connLimiter may be nil (or
 // configured with no max) to leave the global connection count unbounded.
-func NewManager(logger *slog.Logger, connLimiter *limits.ConnLimiter, stats *metrics.Stats) *Manager {
-	return &Manager{logger: logger, connLimiter: connLimiter, stats: stats}
+func NewManager(logger *slog.Logger, connLimiter *limits.ConnLimiter, rec *metrics.Recorder) *Manager {
+	return &Manager{logger: logger, connLimiter: connLimiter, rec: rec}
 }
 
 // StartTCP binds cfg.Address and begins accepting connections, proxying
@@ -61,7 +61,7 @@ func (m *Manager) StartTCP(cfg config.ListenerConfig, picker proxy.BackendPicker
 			m.wg.Add(1)
 			go func() {
 				defer m.wg.Done()
-				proxy.ServeTCP(conn, picker, timeouts, limitsCfg, m.stats, m.logger)
+				proxy.ServeTCP(conn, picker, timeouts, limitsCfg, m.rec, m.logger)
 			}()
 		}
 	}()

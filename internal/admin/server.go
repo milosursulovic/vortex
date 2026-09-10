@@ -8,7 +8,11 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"net/http/pprof"
 	"sync/atomic"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/milosursulovic/vortex/internal/config"
 	"github.com/milosursulovic/vortex/internal/metrics"
@@ -30,7 +34,10 @@ type Server struct {
 }
 
 // New builds an admin server bound to address, not yet listening.
-func New(address string, logger *slog.Logger, registry *Registry, stats *metrics.Stats, cfg *config.Config, reload ReloadFunc) *Server {
+// promReg is exposed at GET /metrics. If pprofEnabled, net/http/pprof's
+// handlers are mounted under /debug/pprof/ — the admin server is already
+// private by design, so this is the only gate needed for that surface.
+func New(address string, logger *slog.Logger, registry *Registry, stats *metrics.Stats, cfg *config.Config, reload ReloadFunc, promReg *prometheus.Registry, pprofEnabled bool) *Server {
 	s := &Server{logger: logger, registry: registry, stats: stats, reload: reload}
 	s.cfg.Store(cfg)
 
@@ -44,6 +51,17 @@ func New(address string, logger *slog.Logger, registry *Registry, stats *metrics
 	mux.HandleFunc("GET /admin/stats", s.handleStats)
 	mux.HandleFunc("GET /admin/config", s.handleConfig)
 	mux.HandleFunc("POST /admin/reload", s.handleReload)
+	mux.Handle("GET /metrics", promhttp.HandlerFor(promReg, promhttp.HandlerOpts{}))
+
+	if pprofEnabled {
+		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("POST /debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
+		logger.Info("pprof_enabled", "path", "/debug/pprof/")
+	}
 
 	s.httpServer = &http.Server{
 		Addr:    address,

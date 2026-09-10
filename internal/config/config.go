@@ -25,6 +25,24 @@ type Config struct {
 	RateLimit      RateLimitConfig      `yaml:"rate_limit" json:"rate_limit"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker" json:"circuit_breaker"`
 	Retry          RetryConfig          `yaml:"retry" json:"retry"`
+	Tracing        TracingConfig        `yaml:"tracing" json:"tracing"`
+	Debug          DebugConfig          `yaml:"debug" json:"debug"`
+}
+
+// TracingConfig enables OpenTelemetry distributed tracing for HTTP
+// requests. Optional and disabled by default, per the spec.
+type TracingConfig struct {
+	Enabled     bool    `yaml:"enabled" json:"enabled"`
+	Exporter    string  `yaml:"exporter" json:"exporter"` // "stdout" or "otlp-http"
+	Endpoint    string  `yaml:"endpoint" json:"endpoint"` // otlp-http collector address, e.g. "localhost:4318"
+	SampleRatio float64 `yaml:"sample_ratio" json:"sample_ratio"`
+	ServiceName string  `yaml:"service_name" json:"service_name"`
+}
+
+// DebugConfig gates runtime debugging surfaces on the (already private)
+// admin server.
+type DebugConfig struct {
+	PprofEnabled bool `yaml:"pprof_enabled" json:"pprof_enabled"`
 }
 
 type ServerConfig struct {
@@ -239,6 +257,16 @@ func (c *Config) applyDefaults() {
 	if c.Retry.Enabled && len(c.Retry.RetryOn) == 0 {
 		c.Retry.RetryOn = []string{"connection_failure", "timeout"}
 	}
+
+	if c.Tracing.Exporter == "" {
+		c.Tracing.Exporter = "stdout"
+	}
+	if c.Tracing.SampleRatio == 0 {
+		c.Tracing.SampleRatio = 1.0
+	}
+	if c.Tracing.ServiceName == "" {
+		c.Tracing.ServiceName = "vortex"
+	}
 }
 
 func (c *Config) validate() error {
@@ -370,6 +398,21 @@ func (c *Config) validate() error {
 			default:
 				return fmt.Errorf("retry: unsupported retry_on value %q", r)
 			}
+		}
+	}
+
+	if c.Tracing.Enabled {
+		switch c.Tracing.Exporter {
+		case "stdout":
+		case "otlp-http":
+			if c.Tracing.Endpoint == "" {
+				return fmt.Errorf("tracing: endpoint is required when exporter is \"otlp-http\"")
+			}
+		default:
+			return fmt.Errorf("tracing: unsupported exporter %q", c.Tracing.Exporter)
+		}
+		if c.Tracing.SampleRatio < 0 || c.Tracing.SampleRatio > 1 {
+			return fmt.Errorf("tracing: sample_ratio must be between 0 and 1")
 		}
 	}
 

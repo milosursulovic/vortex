@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/milosursulovic/vortex/internal/admin"
 	"github.com/milosursulovic/vortex/internal/backend"
@@ -24,6 +26,7 @@ import (
 	"github.com/milosursulovic/vortex/internal/reload"
 	"github.com/milosursulovic/vortex/internal/router"
 	vortextls "github.com/milosursulovic/vortex/internal/tls"
+	"github.com/milosursulovic/vortex/internal/tracing"
 	"github.com/milosursulovic/vortex/pkg/logger"
 )
 
@@ -44,12 +47,33 @@ func run() error {
 	}
 
 	log := logger.New(cfg.Logging.Level, cfg.Logging.Format)
-	stats := metrics.New()
 
-	mgr, pools, rateLimiter, err := startListeners(cfg, stats, log)
+	if cfg.Debug.PprofEnabled {
+		// Off by default: sampling has real overhead. Rates match common
+		// guidance for occasional profiling, not always-on production load.
+		runtime.SetBlockProfileRate(10000)
+		runtime.SetMutexProfileFraction(5)
+	}
+
+	tracingShutdown, err := tracing.Setup(cfg.Tracing, log)
+	if err != nil {
+		return fmt.Errorf("setup tracing: %w", err)
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := tracingShutdown(shutdownCtx); err != nil {
+			log.Error("tracing_shutdown_failed", "error", err.Error())
+		}
+	}()
+
+	rec, promReg := metrics.NewRecorder()
+
+	mgr, pools, rateLimiter, err := startListeners(cfg, rec, log)
 	if err != nil {
 		return fmt.Errorf("start listeners: %w", err)
 	}
+	metrics.RegisterPoolCollector(promReg, rec.Stats, pools)
 
 	registry := admin.NewRegistry(pools)
 
@@ -66,7 +90,7 @@ func run() error {
 		log.Info("configuration_reloaded")
 		return nil
 	}
-	adminServer = admin.New(cfg.Admin.Address, log, registry, stats, cfg, reloadFn)
+	adminServer = admin.New(cfg.Admin.Address, log, registry, rec.Stats, cfg, reloadFn, promReg, cfg.Debug.PprofEnabled)
 	serveErrCh := adminServer.Start()
 
 	backgroundCtx, stopBackground := context.WithCancel(context.Background())
@@ -135,9 +159,9 @@ func watchReloadSignal(ctx context.Context, reloadFn func() error, log *slog.Log
 // for the flat pool or by backend_pool name, so callers can health check
 // and administer them; and the HTTP rate limiter (nil if disabled) so
 // callers can run its background reaper.
-func startListeners(cfg *config.Config, stats *metrics.Stats, log *slog.Logger) (*listener.Manager, map[string]*backend.Pool, *ratelimit.Limiter, error) {
+func startListeners(cfg *config.Config, rec *metrics.Recorder, log *slog.Logger) (*listener.Manager, map[string]*backend.Pool, *ratelimit.Limiter, error) {
 	connLimiter := limits.NewConnLimiter(cfg.Limits.MaxConnections)
-	mgr := listener.NewManager(log, connLimiter, stats)
+	mgr := listener.NewManager(log, connLimiter, rec)
 	pools := make(map[string]*backend.Pool)
 
 	hasTCPListener := false
@@ -194,7 +218,7 @@ func startListeners(cfg *config.Config, stats *metrics.Stats, log *slog.Logger) 
 			log.Info("rate_limiting_enabled", "requests_per_second", cfg.RateLimit.RequestsPerSecond, "burst", cfg.RateLimit.Burst, "per_ip", cfg.RateLimit.PerIP)
 		}
 
-		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, cfg.Limits, rateLimiter, cfg.Retry, stats, log)
+		httpProxy = proxy.NewHTTPProxy(router.New(routes), cfg.Timeouts, cfg.Limits, rateLimiter, cfg.Retry, rec, log)
 	}
 
 	for _, l := range cfg.Listeners {

@@ -119,3 +119,18 @@ retry:
   enabled: false
   max_retries: 2
   retry_on: [connection_failure, timeout]
+
+# Prometheus metrics are always exposed at GET /metrics on the admin
+# server (see admin.address above) — no config needed to enable them.
+
+# Optional distributed tracing for HTTP requests. Disabled by default.
+tracing:
+  enabled: false
+  exporter: stdout # "stdout" or "otlp-http"
+  endpoint: "localhost:4318" # only used by otlp-http
+  sample_ratio: 1.0
+  service_name: vortex
+
+# Debug surfaces on the (already private) admin server.
+debug:
+  pprof_enabled: false # exposes GET /debug/pprof/* — has real overhead, opt in
