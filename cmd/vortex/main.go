@@ -161,7 +161,7 @@ func watchReloadSignal(ctx context.Context, reloadFn func() error, log *slog.Log
 // callers can run its background reaper.
 func startListeners(cfg *config.Config, rec *metrics.Recorder, log *slog.Logger) (*listener.Manager, map[string]*backend.Pool, *ratelimit.Limiter, error) {
 	connLimiter := limits.NewConnLimiter(cfg.Limits.MaxConnections)
-	mgr := listener.NewManager(log, connLimiter, rec)
+	mgr := listener.NewManager(log, connLimiter, rec, cfg.Network)
 	pools := make(map[string]*backend.Pool)
 
 	hasTCPListener := false

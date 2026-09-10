@@ -64,6 +64,32 @@ swap the load-balancing algorithm — those need a restart.
   real overhead.
 - **Logs**: structured JSON via `log/slog` to stdout (from Phase 1).
 
+## Linux networking
+
+Go's runtime already uses epoll internally for all network I/O, and
+`*net.TCPConn` already defaults to `TCP_NODELAY` on — that's the baseline,
+not a problem to route around. `network.*` in the config adds a small set
+of additional opt-in knobs (all default to Go's own behavior):
+
+- `reuse_port_workers: N` — binds N sockets to the same address
+  (`SO_REUSEPORT`) instead of one, so the kernel spreads accepted
+  connections across N accept-loop goroutines. Can be overridden per
+  listener. Only worth setting if profiling shows accept-loop contention
+  under your actual load — it wasn't needed to reach the numbers below.
+- `keepalive_enabled` / `keepalive_interval`, `tcp_nodelay`,
+  `read_buffer_bytes` / `write_buffer_bytes` — direct overrides of Go's
+  socket defaults, for an operator who has a specific reason to change
+  them.
+
+Heavier techniques the spec names as an optional, separate track
+(io_uring, eBPF, a custom event loop, zero-copy `splice`/`sendfile`) are
+deliberately not implemented here: nothing in the Phase 11 profiling showed
+VORTEX's own code as the bottleneck (CPU time was syscalls and GC, the
+expected shape for a proxy), so the spec's own gate — "only after
+profiling demonstrates a real bottleneck" — isn't met. They belong in an
+experimental branch if a specific workload ever needs them, not folded
+into the main implementation speculatively.
+
 ## Development
 
 ```sh
@@ -83,7 +109,7 @@ each one.
 
 ## Status
 
-In active development, following the phased plan in the spec (Go Foundation →
+All 12 phases of the spec's build plan are implemented: Go Foundation →
 TCP Proxy → Backend Pool → Load Balancing → Health Checking → HTTP Proxy →
-TLS → Resilience → Runtime Management → Observability → Performance → Linux
-Optimization).
+TLS → Resilience → Runtime Management → Observability → Performance →
+Linux Optimization.

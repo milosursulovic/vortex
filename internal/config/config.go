@@ -27,6 +27,28 @@ type Config struct {
 	Retry          RetryConfig          `yaml:"retry" json:"retry"`
 	Tracing        TracingConfig        `yaml:"tracing" json:"tracing"`
 	Debug          DebugConfig          `yaml:"debug" json:"debug"`
+	Network        NetworkConfig        `yaml:"network" json:"network"`
+}
+
+// NetworkConfig tunes Linux socket behavior for every listener. Zero
+// values mean "use Go's own default" (which is already TCP_NODELAY on and
+// keepalive on with a sane period) — every field here is an opt-in
+// override for an operator who has a specific reason to change it, not a
+// default VORTEX needs to function. See internal/netutil.
+type NetworkConfig struct {
+	// SO_REUSEPORT: run N independent listening sockets on the same
+	// address so the kernel spreads accepts across them instead of one
+	// accept loop handling every connection. 0 or 1 = the normal single
+	// listener (default).
+	ReusePortWorkers int `yaml:"reuse_port_workers" json:"reuse_port_workers"`
+
+	KeepAliveEnabled *bool    `yaml:"keepalive_enabled,omitempty" json:"keepalive_enabled,omitempty"`
+	KeepAlive        Duration `yaml:"keepalive_interval" json:"keepalive_interval"`
+
+	TCPNoDelay *bool `yaml:"tcp_nodelay,omitempty" json:"tcp_nodelay,omitempty"`
+
+	ReadBufferBytes  int `yaml:"read_buffer_bytes" json:"read_buffer_bytes"`
+	WriteBufferBytes int `yaml:"write_buffer_bytes" json:"write_buffer_bytes"`
 }
 
 // TracingConfig enables OpenTelemetry distributed tracing for HTTP
@@ -65,6 +87,9 @@ type ListenerConfig struct {
 	Address  string     `yaml:"address" json:"address"`
 	Protocol string     `yaml:"protocol" json:"protocol"`
 	TLS      *TLSConfig `yaml:"tls,omitempty" json:"tls,omitempty"`
+	// ReusePort overrides network.reuse_port_workers for this one listener
+	// (0 = inherit the global setting). See NetworkConfig.
+	ReusePortWorkers int `yaml:"reuse_port_workers,omitempty" json:"reuse_port_workers,omitempty"`
 }
 
 // TLSConfig enables TLS termination on an HTTP listener. TCP listeners
@@ -267,6 +292,12 @@ func (c *Config) applyDefaults() {
 	if c.Tracing.ServiceName == "" {
 		c.Tracing.ServiceName = "vortex"
 	}
+
+	if c.Network.KeepAliveEnabled == nil || *c.Network.KeepAliveEnabled {
+		if c.Network.KeepAlive == 0 {
+			c.Network.KeepAlive = Duration(15e9) // 15s, matches Go's own default period
+		}
+	}
 }
 
 func (c *Config) validate() error {
@@ -312,6 +343,17 @@ func (c *Config) validate() error {
 				}
 			}
 		}
+
+		if l.ReusePortWorkers < 0 {
+			return fmt.Errorf("listener %q: reuse_port_workers must not be negative", l.Name)
+		}
+	}
+
+	if c.Network.ReusePortWorkers < 0 {
+		return fmt.Errorf("network.reuse_port_workers must not be negative")
+	}
+	if c.Network.ReadBufferBytes < 0 || c.Network.WriteBufferBytes < 0 {
+		return fmt.Errorf("network: buffer sizes must not be negative")
 	}
 
 	if err := validateBackends(c.Backends); err != nil {

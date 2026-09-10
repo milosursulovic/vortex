@@ -78,7 +78,7 @@ func TestConcurrentTCPRoundTripsNoCorruptionNoLeak(t *testing.T) {
 	picker := &balancer.Picker{Balancer: bal, Pool: pool}
 
 	rec, _ := metrics.NewRecorder()
-	mgr := listener.NewManager(discardLogger(), limits.NewConnLimiter(0), rec)
+	mgr := listener.NewManager(discardLogger(), limits.NewConnLimiter(0), rec, config.NetworkConfig{})
 
 	timeouts := config.TimeoutsConfig{
 		Connect: config.Duration(2 * time.Second),

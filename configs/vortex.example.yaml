@@ -134,3 +134,18 @@ tracing:
 # Debug surfaces on the (already private) admin server.
 debug:
   pprof_enabled: false # exposes GET /debug/pprof/* — has real overhead, opt in
+
+# Linux socket tuning. Go's own defaults (TCP_NODELAY on, keepalive on)
+# are already the right starting point — every field here is an opt-in
+# override, not something you need to touch to run VORTEX.
+network:
+  # Run N listening sockets per address (SO_REUSEPORT) instead of one, so
+  # the kernel spreads accepts across them under very high connection
+  # rates. 0 or 1 = a single listener (default). Can also be set per
+  # listener via listeners[].reuse_port_workers to override just that one.
+  reuse_port_workers: 0
+  keepalive_enabled: true
+  keepalive_interval: 15s
+  tcp_nodelay: true
+  read_buffer_bytes: 0  # 0 = OS default (auto-tuned on Linux)
+  write_buffer_bytes: 0 # 0 = OS default
