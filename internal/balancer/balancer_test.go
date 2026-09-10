@@ -2,6 +2,7 @@ package balancer
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/milosursulovic/vortex/internal/backend"
@@ -138,6 +139,67 @@ func TestConsistentHashingIsDeterministicPerClient(t *testing.T) {
 		if again.Name != first.Name {
 			t.Fatalf("expected same backend %s for same client, got %s", first.Name, again.Name)
 		}
+	}
+}
+
+func TestConsistentHashingInvalidatesCacheOnDisable(t *testing.T) {
+	pool := newTestPool(t,
+		config.BackendConfig{Name: "a", Address: "x", Weight: 1},
+		config.BackendConfig{Name: "b", Address: "x", Weight: 1},
+	)
+	ch := NewConsistentHashing()
+	ctx := common.WithClientAddr(context.Background(), "203.0.113.7:54321")
+
+	first, err := ch.Next(ctx, pool)
+	if err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+
+	pool.Disable(first.Name)
+
+	for i := 0; i < 20; i++ {
+		got, err := ch.Next(ctx, pool)
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if got.Name == first.Name {
+			t.Fatalf("disabled backend %s must not be returned after cache invalidation", first.Name)
+		}
+	}
+}
+
+func TestConsistentHashingPicksUpAddedBackend(t *testing.T) {
+	pool := newTestPool(t, config.BackendConfig{Name: "a", Address: "x", Weight: 1})
+	ch := NewConsistentHashing()
+
+	// With only "a" healthy, every client must land on it.
+	for _, ip := range []string{"1.1.1.1:1", "2.2.2.2:2", "3.3.3.3:3"} {
+		ctx := common.WithClientAddr(context.Background(), ip)
+		got, err := ch.Next(ctx, pool)
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if got.Name != "a" {
+			t.Fatalf("expected only backend a, got %s", got.Name)
+		}
+	}
+
+	pool.Add(backend.New("b", "y", 1))
+
+	sawB := false
+	for i := 0; i < 200; i++ {
+		ctx := common.WithClientAddr(context.Background(), fmt.Sprintf("10.0.0.%d:1", i))
+		got, err := ch.Next(ctx, pool)
+		if err != nil {
+			t.Fatalf("Next: %v", err)
+		}
+		if got.Name == "b" {
+			sawB = true
+			break
+		}
+	}
+	if !sawB {
+		t.Fatal("expected the newly added backend b to receive at least some clients")
 	}
 }
 

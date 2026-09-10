@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"slices"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -71,6 +72,7 @@ func NewHTTPProxy(r *router.Router, timeouts config.TimeoutsConfig, limitsCfg co
 		Rewrite:      p.rewrite,
 		Transport:    transport,
 		ErrorHandler: p.errorHandler,
+		BufferPool:   newBufferPool(),
 	}
 	return p
 }
@@ -258,6 +260,34 @@ func (t *trackingTransport) RoundTrip(req *http.Request) (*http.Response, error)
 		t.rec.ResponsesTotal.Add(1)
 	}
 	return resp, err
+}
+
+// bufferPool implements httputil.BufferPool on top of sync.Pool. Profiling
+// under load showed httputil.ReverseProxy's default (unpooled) 32KB
+// copyBuffer allocation was 68% of all allocated bytes in the process —
+// by far the single largest allocator — so it's pooled here the same way
+// proxy/tcp.go already pools its own copy buffer.
+type bufferPool struct {
+	pool sync.Pool
+}
+
+func newBufferPool() *bufferPool {
+	return &bufferPool{
+		pool: sync.Pool{
+			New: func() any {
+				buf := make([]byte, 32*1024)
+				return &buf
+			},
+		},
+	}
+}
+
+func (p *bufferPool) Get() []byte {
+	return *(p.pool.Get().(*[]byte))
+}
+
+func (p *bufferPool) Put(buf []byte) {
+	p.pool.Put(&buf)
 }
 
 // countingResponseWriter tracks bytes written to the client.

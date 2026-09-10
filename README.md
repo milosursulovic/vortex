@@ -70,7 +70,16 @@ swap the load-balancing algorithm — those need a restart.
 make test   # unit tests
 make race   # race detector
 make vet    # go vet
+make bench  # benchmarks (load-balancing algorithms, buffer pooling)
 ```
+
+`test/integration` drives the real proxy (not mocks) under concurrent load
+and checks for leaked connections and negative counters — run it with
+`-race`. Two buffer pools (the TCP copy buffer and the HTTP reverse proxy's
+copy buffer) and a cached consistent-hashing ring exist because profiling
+under load showed them as the top allocators/hot path, not by default —
+see the comments at their definitions for the benchmarks that justified
+each one.
 
 ## Status
 
